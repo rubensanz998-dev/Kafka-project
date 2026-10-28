@@ -103,7 +103,7 @@ mvn verify
 - Los 4 escenarios de la saga, con login real en Keycloak.
 - 401 sin token o con token inválido, y cada usuario ve solo sus pedidos.
 - La compensación devuelve el stock.
-- El pedido del usuario `boom` llega al DLT. (La compensación desde el DLT está cubierta por tests, pero aún no se ha probado con Kafka real.)
+- El pedido del usuario `boom` llega al DLT y `payment-service` lo compensa: queda `CANCELLED` y el stock vuelve. Un poison pill en `inventory.result-dlt` se registra y se salta (sin crear `-dlt-dlt`).
 - Outbox: con Kafka apagado el pedido se acepta y, al volver Kafka, se completa.
 
 **No verificado:** `docker-compose.yml` y `Dockerfile` no se han podido ejecutar (no había Docker en la máquina de desarrollo).
