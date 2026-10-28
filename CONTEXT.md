@@ -1,6 +1,6 @@
 # Contexto del proyecto
 
-Documento para quien vaya a trabajar en este repo (personas o asistentes de IA): qué es, cómo está montado, qué reglas no hay que romper y en qué estado está. Para usarlo como demo, mira el [README](README.md).
+Documento para quien vaya a trabajar en este repo: qué es, cómo está montado, qué reglas no hay que romper y en qué estado está. Para usarlo como demo, mira el [README](README.md).
 
 ## Propósito
 
@@ -51,7 +51,7 @@ Proyecto de portfolio para demostrar conocimientos de **Apache Kafka** en un esc
    - `order`: un pedido solo sale de `PENDING` una vez (el agregado devuelve `false` si ya está finalizado).
    - `inventory`: PK `reservation.order_id` y comprobación `exists` antes de reservar. `release`/`confirm` solo actúan si el estado es `RESERVED`.
    - `payment`: PK `payment.order_id` y comprobación `exists`. `@Version` fuerza un INSERT, de modo que un duplicado choca con la PK en vez de sobrescribir.
-4. **Error de negocio ≠ error técnico.** Los rechazos de negocio se publican como eventos normales. Solo los fallos técnicos lanzan una excepción, y de ahí pasan a 2 reintentos y al DLT `<topic>-dlt`.
+4. **Error de negocio ≠ error técnico.** Los rechazos de negocio se publican como eventos normales. Solo los fallos técnicos lanzan una excepción, y de ahí pasan a 2 reintentos y al DLT `<topic>-dlt`. `payment-service` consume `inventory.result-dlt` (`DeadLetterListener`, bytes en crudo para que un poison pill se registre y se salte) y, si el mensaje es `RESERVED`, publica `PaymentResult` FAILED para que la saga compense.
 5. **Optimistic locking** (`@Version`) en `orders`, `product` y `reservation`: ante un conflicto se lanza una excepción y Kafka reintenta.
 6. **El cliente de un pedido sale del JWT** (`preferred_username`), nunca del body. Cada usuario solo ve sus propios pedidos: si el pedido es de otro, se devuelve 404.
 
@@ -89,7 +89,7 @@ mvn verify
 ```
 
 - Necesita JDK 21. No necesita Docker: los tests usan el perfil `test` (`src/test/resources/application-test.yml`), con H2 en modo PostgreSQL, los listeners de Kafka desactivados y sin scheduler de la outbox. Flyway aplica las mismas migraciones que en producción.
-- 37 tests: dominio puro, casos de uso con adaptadores reales, seguridad (MockMvc + `jwt()`), `OutboxPublisher` con `KafkaTemplate` mockeado y ArchUnit.
+- 41 tests: dominio puro, casos de uso con adaptadores reales, seguridad (MockMvc + `jwt()`), `OutboxPublisher` con `KafkaTemplate` mockeado y ArchUnit.
 - Las migraciones `V1__*.sql` aún no se han publicado nunca, así que se pueden editar. **En cuanto haya un despliegue, los cambios de esquema van en nuevas `V2__...`.**
 
 ## Cómo extender
@@ -103,13 +103,13 @@ mvn verify
 - Los 4 escenarios de la saga, con login real en Keycloak.
 - 401 sin token o con token inválido, y cada usuario ve solo sus pedidos.
 - La compensación devuelve el stock.
-- El pedido del usuario `boom` llega al DLT.
+- El pedido del usuario `boom` llega al DLT. (La compensación desde el DLT está cubierta por tests, pero aún no se ha probado con Kafka real.)
 - Outbox: con Kafka apagado el pedido se acepta y, al volver Kafka, se completa.
 
 **No verificado:** `docker-compose.yml` y `Dockerfile` no se han podido ejecutar (no había Docker en la máquina de desarrollo).
 
 **Pendiente / ideas:**
-- Reprocesado del DLT o timeout de la saga: un pedido en el DLT se queda `PENDING`.
+- Timeout general de la saga: un fallo técnico fuera del pago (p. ej. en `order-service`) aún deja el pedido `PENDING` en su DLT.
 - Purga de `outbox_event`.
 - CDC con Debezium en lugar de polling.
 - Testcontainers.

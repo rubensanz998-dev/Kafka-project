@@ -38,4 +38,21 @@ public class PaymentService {
         log.info("Pago pedido {}: {}", cmd.orderId(), payment.status());
         events.paymentProcessed(payment);
     }
+
+    /**
+     * Compensación tras agotar los reintentos: registra el pago como fallido para que la saga cancele el pedido
+     * y libere el stock en vez de dejarlo PENDING. Idempotente igual que processPayment.
+     */
+    // shortcut: con una pasarela real, antes de rendirse hay que consultar el cobro por orderId (clave de
+    // idempotencia): si el cargo entró pero falló el commit, esto cancelaría un pedido ya cobrado.
+    public void failPayment(ProcessPaymentCommand cmd, String reason) {
+        if (payments.exists(cmd.orderId())) {
+            log.warn("Pedido {} ya tenía pago, DLT ignorado", cmd.orderId());
+            return;
+        }
+        var payment = Payment.unavailable(cmd.orderId(), cmd.customerId(), cmd.amount(), reason);
+        payments.save(payment);
+        log.warn("Pago pedido {}: FAILED ({})", cmd.orderId(), reason);
+        events.paymentProcessed(payment);
+    }
 }

@@ -39,6 +39,11 @@ public class Payment {
                 : new Payment(orderId, customerId, amount, Status.COMPLETED, null, Instant.now());
     }
 
+    /** Pago que no se pudo cobrar por un fallo técnico persistente: la saga lo trata como un rechazo. */
+    public static Payment unavailable(String orderId, String customerId, BigDecimal amount, String reason) {
+        return new Payment(orderId, customerId, amount, Status.FAILED, reason, Instant.now());
+    }
+
     public static Payment restore(String orderId, String customerId, BigDecimal amount, Status status,
                                   String reason, Instant createdAt) {
         return new Payment(orderId, customerId, amount, status, reason, createdAt);

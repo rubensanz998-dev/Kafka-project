@@ -44,7 +44,7 @@ flowchart LR
 - ✅ **Camino feliz**: pedido → stock reservado → pago OK → `CONFIRMED`
 - ❌ **Sin stock**: pedido → stock rechazado → `CANCELLED`
 - 🔁 **Compensación**: stock reservado → pago rechazado (importe > 1000) → inventario **devuelve el stock** → `CANCELLED`
-- ☠️ **Error técnico**: la pasarela falla → 2 reintentos → **Dead Letter Topic** `inventory.result-dlt`
+- ☠️ **Error técnico**: la pasarela falla → 2 reintentos → **Dead Letter Topic** `inventory.result-dlt` → `payment-service` lo consume, da el pago por fallido → el stock vuelve → `CANCELLED`
 
 ### Arquitectura hexagonal en cada servicio
 
@@ -121,7 +121,7 @@ curl -i localhost:8081/orders
 
 ### 3. Error técnico y Dead Letter Topic
 
-Haz login con `boom` / `boom123` y crea un pedido. La pasarela simulada falla, Kafka reintenta 2 veces y el mensaje acaba en `inventory.result-dlt` (míralo en Kafka UI).
+Haz login con `boom` / `boom123` y crea un pedido. La pasarela simulada falla, Kafka reintenta 2 veces y el mensaje acaba en `inventory.result-dlt` (míralo en Kafka UI). `payment-service` escucha ese DLT y publica el pago como fallido ("Pasarela de pago no disponible"), así que la saga compensa: el pedido termina `CANCELLED` y el stock vuelve. El mensaje se queda en el DLT como registro.
 
 ### 4. El patrón Outbox en acción: apaga Kafka
 
@@ -154,6 +154,7 @@ Logs de los "emails": `docker compose logs -f notification-service`
 | **Productor idempotente + `acks=all`** | `kafka-common.yml` |
 | **Consumidores idempotentes** | Kafka entrega *at-least-once*: la PK de cada tabla y las reglas del agregado ignoran los duplicados |
 | **Reintentos + Dead Letter Topic** | `DefaultErrorHandler` + `DeadLetterPublishingRecoverer` |
+| **Consumidor del DLT** | `DeadLetterListener` en `payment-service`: convierte un cobro abandonado en compensación |
 | **Poison pills** | `ErrorHandlingDeserializer` |
 | **KRaft** | Kafka sin Zookeeper |
 
@@ -173,13 +174,14 @@ Logs de los "emails": `docker compose logs -f notification-service`
 - **Coreografía en vez de orquestación**: con 4 servicios, cada uno reacciona a eventos sin un coordinador central.
 - **Eventos de dominio ≠ eventos de integración**: el dominio emite `OrderPlaced`/`OrderConfirmed`, y un adaptador los traduce a los contratos públicos del módulo `common`. El modelo interno puede cambiar sin romper a los consumidores.
 - **Entidades JPA separadas del dominio**: más código de mapeo a cambio de un dominio testeable en milisegundos y sin anotaciones de framework.
-- **Error de negocio ≠ error técnico**: "sin stock" o "pago rechazado" son eventos normales de la saga, mientras que una excepción de la pasarela va a reintentos y al DLT.
+- **Error de negocio ≠ error técnico**: "sin stock" o "pago rechazado" son eventos normales de la saga, mientras que una excepción de la pasarela va a reintentos y al DLT. Al agotar los reintentos, el consumidor del DLT la convierte en un rechazo para que la saga no se quede a medias.
 - **Password grant solo para la demo**: permite obtener un token con un `curl`. Un frontend real usaría Authorization Code + PKCE.
 - **JSON con cabeceras de tipo**: simple para empezar. En producción usaría Avro + Schema Registry.
 
 ## Limitaciones conocidas (siguientes pasos)
 
-- Un pedido cuyo pago acaba en el DLT queda `PENDING` con el stock reservado hasta que alguien reprocese el DLT. Falta un reprocesado automático o un timeout de la saga.
+- Un pedido que falla en otros pasos (p. ej. `order-service` sin base de datos al cancelar) sigue quedándose `PENDING` en su DLT. Faltaría un timeout general de la saga.
+- Con una pasarela real, antes de dar un cobro por fallido habría que consultarlo por `orderId` (clave de idempotencia): el cargo pudo entrar aunque fallara el commit.
 - La outbox se lee por *polling* cada 500 ms. Con mucho volumen, conviene CDC con Debezium.
 - La tabla `outbox_event` no se purga. Falta un job de limpieza de eventos enviados.
 - Tests de integración con Testcontainers (Kafka y Postgres reales) y métricas de consumer lag con Prometheus + Grafana.
@@ -190,7 +192,7 @@ Logs de los "emails": `docker compose logs -f notification-service`
 mvn verify   # requiere JDK 21; no necesita Docker (usa H2 en modo PostgreSQL)
 ```
 
-37 tests: dominio puro, casos de uso con JPA + outbox, seguridad del API, publicación de la outbox y reglas de arquitectura.
+41 tests: dominio puro, casos de uso con JPA + outbox, seguridad del API, publicación de la outbox y reglas de arquitectura.
 
 ## Estructura
 

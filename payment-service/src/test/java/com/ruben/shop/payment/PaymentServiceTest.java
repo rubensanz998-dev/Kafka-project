@@ -71,4 +71,20 @@ class PaymentServiceTest {
         assertThat(payments.exists("o1")).isFalse();
         assertThat(outbox.count()).isZero();
     }
+
+    @Test
+    void failPaymentPublishesFailureSoTheSagaCompensates() throws Exception {
+        service.failPayment(new ProcessPaymentCommand("o1", "boom", BigDecimal.TEN), "Pasarela caída");
+
+        assertThat(payments.exists("o1")).isTrue();
+        assertThat(published()).isEqualTo(new PaymentResult("o1", PaymentResult.Status.FAILED, "Pasarela caída"));
+    }
+
+    @Test
+    void failPaymentIgnoresOrdersAlreadyPaid() {
+        pay("c1", "10");
+        service.failPayment(new ProcessPaymentCommand("o1", "c1", BigDecimal.TEN), "Pasarela caída");
+
+        assertThat(outbox.count()).isEqualTo(1);
+    }
 }
