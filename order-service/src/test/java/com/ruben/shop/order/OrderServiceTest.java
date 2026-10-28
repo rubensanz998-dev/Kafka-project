@@ -1,67 +1,82 @@
 package com.ruben.shop.order;
 
 import com.ruben.shop.common.Topics;
-import com.ruben.shop.common.events.InventoryResult;
-import com.ruben.shop.common.events.OrderCreated;
-import com.ruben.shop.common.events.PaymentResult;
+import com.ruben.shop.order.application.OrderService;
+import com.ruben.shop.order.application.PlaceOrderCommand;
+import com.ruben.shop.order.domain.Money;
+import com.ruben.shop.order.domain.Order;
+import com.ruben.shop.order.domain.OrderStatus;
+import com.ruben.shop.outbox.OutboxEvent;
+import com.ruben.shop.outbox.OutboxEventRepository;
 import org.junit.jupiter.api.Test;
-import org.springframework.kafka.core.KafkaTemplate;
-
-import java.math.BigDecimal;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.domain.Sort;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
+/** Casos de uso con sus adaptadores reales (JPA + outbox) sobre H2. */
+@SpringBootTest
+@ActiveProfiles("test")
+@Transactional
 class OrderServiceTest {
 
-    @SuppressWarnings("unchecked")
-    private final KafkaTemplate<String, Object> kafka = mock(KafkaTemplate.class);
-    private final OrderService service = new OrderService(kafka);
+    @Autowired
+    OrderService service;
+    @Autowired
+    OutboxEventRepository outbox;
 
-    @Test
-    void createPublishesOrderCreatedKeyedByOrderId() {
-        var order = service.create("c1", "LAPTOP", 1, new BigDecimal("900"));
+    private Order place(int quantity) {
+        return service.placeOrder(new PlaceOrderCommand("c1", "LAPTOP", quantity, Money.of("900")));
+    }
 
-        assertThat(order.status()).isEqualTo(Order.Status.PENDING);
-        verify(kafka).send(eq(Topics.ORDER_CREATED), eq(order.id()), any(OrderCreated.class));
+    private OrderStatus statusOf(Order order) {
+        return service.find(order.id()).orElseThrow().status();
     }
 
     @Test
-    void paymentCompletedConfirmsOrder() {
-        var order = service.create("c1", "LAPTOP", 1, new BigDecimal("900"));
+    void placeOrderStoresOrderAndOutboxEventInSameTransaction() {
+        var order = place(1);
 
-        service.onPaymentResult(new PaymentResult(order.id(), PaymentResult.Status.COMPLETED, null));
-
-        assertThat(service.find(order.id()).orElseThrow().status()).isEqualTo(Order.Status.CONFIRMED);
+        assertThat(statusOf(order)).isEqualTo(OrderStatus.PENDING);
+        assertThat(outbox.findAll()).singleElement().satisfies(e -> {
+            assertThat(e.getTopic()).isEqualTo(Topics.ORDER_CREATED);
+            assertThat(e.getEventKey()).isEqualTo(order.id().value());
+        });
     }
 
     @Test
-    void stockRejectedCancelsOrder() {
-        var order = service.create("c1", "LAPTOP", 99, new BigDecimal("900"));
+    void confirmPersistsAndPublishesStatusChange() {
+        var order = place(1);
 
-        service.onInventoryResult(new InventoryResult(order.id(), "c1", order.amount(),
-                InventoryResult.Status.REJECTED, "sin stock"));
+        service.confirm(order.id());
 
-        var updated = service.find(order.id()).orElseThrow();
-        assertThat(updated.status()).isEqualTo(Order.Status.CANCELLED);
-        assertThat(updated.reason()).isEqualTo("sin stock");
+        assertThat(statusOf(order)).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(outbox.findAll(Sort.by("id"))).extracting(OutboxEvent::getTopic)
+                .containsExactly(Topics.ORDER_CREATED, Topics.ORDER_STATUS);
     }
 
     @Test
     void duplicateEventsDoNotChangeFinalStateNorRepublish() {
-        var order = service.create("c1", "LAPTOP", 1, new BigDecimal("900"));
-        var completed = new PaymentResult(order.id(), PaymentResult.Status.COMPLETED, null);
+        var order = place(1);
 
-        service.onPaymentResult(completed);
-        service.onPaymentResult(completed);
-        service.onPaymentResult(new PaymentResult(order.id(), PaymentResult.Status.FAILED, "tarde"));
+        service.confirm(order.id());
+        service.confirm(order.id());
+        service.cancel(order.id(), "tarde");
 
-        assertThat(service.find(order.id()).orElseThrow().status()).isEqualTo(Order.Status.CONFIRMED);
-        verify(kafka, times(1)).send(eq(Topics.ORDER_STATUS), anyString(), any());
+        var stored = service.find(order.id()).orElseThrow();
+        assertThat(stored.status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(stored.reason()).isNull();
+        assertThat(outbox.findAll()).filteredOn(e -> e.getTopic().equals(Topics.ORDER_STATUS)).hasSize(1);
+    }
+
+    @Test
+    void findByCustomerOnlyReturnsTheirOrders() {
+        place(1);
+        service.placeOrder(new PlaceOrderCommand("otro", "PHONE", 1, Money.of("10")));
+
+        assertThat(service.findByCustomer("c1")).extracting(Order::customerId).containsOnly("c1");
     }
 }

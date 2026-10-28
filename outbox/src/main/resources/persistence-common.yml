@@ -1,0 +1,9 @@
+# Configuración de base de datos común. Cada servicio define solo spring.datasource.url (su propia BD).
+spring:
+  datasource:
+    username: ${DB_USER:shop}
+    password: ${DB_PASSWORD:shop}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate   # el esquema lo gestiona Flyway; Hibernate solo comprueba que encaja

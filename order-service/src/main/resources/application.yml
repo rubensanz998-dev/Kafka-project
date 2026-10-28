@@ -5,7 +5,19 @@ spring:
   application:
     name: order-service
   config:
-    import: classpath:kafka-common.yml
+    import:
+      - classpath:kafka-common.yml
+      - classpath:persistence-common.yml
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:5432/orders
   kafka:
     consumer:
       group-id: order-service
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # issuer-uri: el "iss" que deben llevar los tokens (la URL pública de Keycloak).
+          # jwk-set-uri: de dónde descargar las claves públicas (dentro de Docker es keycloak:8080).
+          issuer-uri: ${KEYCLOAK_ISSUER:http://localhost:8180/realms/shop}
+          jwk-set-uri: ${KEYCLOAK_JWKS:http://localhost:8180/realms/shop/protocol/openid-connect/certs}

@@ -2,7 +2,11 @@ spring:
   application:
     name: payment-service
   config:
-    import: classpath:kafka-common.yml
+    import:
+      - classpath:kafka-common.yml
+      - classpath:persistence-common.yml
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:5432/payments
   kafka:
     consumer:
       group-id: payment-service

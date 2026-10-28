@@ -26,6 +26,44 @@ services:
       timeout: 10s
       retries: 20
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    ports:
+      - "5433:5432"   # 5433 en tu máquina para no chocar con un Postgres local
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+    volumes:
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  adminer:
+    image: adminer
+    ports:
+      - "8085:8080"   # UI web para ver las tablas (servidor: postgres, usuario/clave: shop/shop)
+    depends_on:
+      - postgres
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: start-dev --import-realm
+    ports:
+      - "8180:8080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Todos los tokens llevan este issuer, se pidan desde tu máquina o desde dentro de Docker.
+      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    volumes:
+      - ./docker/keycloak:/opt/keycloak/data/import:ro   # realm "shop" con los usuarios demo
+
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     ports:
@@ -43,8 +81,14 @@ services:
       - "8081:8081"
     environment:
       KAFKA_BOOTSTRAP: kafka:29092
+      DB_HOST: postgres
+      KEYCLOAK_JWKS: http://keycloak:8080/realms/shop/protocol/openid-connect/certs
     depends_on:
+      keycloak:
+        condition: service_started
       kafka:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   inventory-service:
@@ -53,16 +97,22 @@ services:
       - "8082:8082"
     environment:
       KAFKA_BOOTSTRAP: kafka:29092
+      DB_HOST: postgres
     depends_on:
       kafka:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   payment-service:
     build: { context: ., args: { SERVICE: payment-service } }
     environment:
       KAFKA_BOOTSTRAP: kafka:29092
+      DB_HOST: postgres
     depends_on:
       kafka:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   notification-service:
@@ -72,3 +122,6 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+
+volumes:
+  pgdata:

@@ -1,0 +1,34 @@
+{
+  "realm": "shop",
+  "enabled": true,
+  "accessTokenLifespan": 1800,
+  "clients": [
+    {
+      "clientId": "shop-client",
+      "name": "Shop demo client",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true
+    }
+  ],
+  "users": [
+    {
+      "username": "user123",
+      "enabled": true,
+      "email": "user123@demo.local",
+      "emailVerified": true,
+      "firstName": "Demo",
+      "lastName": "User",
+      "credentials": [{ "type": "password", "value": "pass123", "temporary": false }]
+    },
+    {
+      "username": "boom",
+      "enabled": true,
+      "email": "boom@demo.local",
+      "emailVerified": true,
+      "firstName": "Boom",
+      "lastName": "Demo",
+      "credentials": [{ "type": "password", "value": "boom123", "temporary": false }]
+    }
+  ]
+}

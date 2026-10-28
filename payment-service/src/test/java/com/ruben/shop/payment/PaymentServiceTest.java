@@ -1,60 +1,74 @@
 package com.ruben.shop.payment;
 
-import com.ruben.shop.common.Topics;
-import com.ruben.shop.common.events.InventoryResult;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruben.shop.common.events.PaymentResult;
+import com.ruben.shop.outbox.OutboxEventRepository;
+import com.ruben.shop.payment.application.PaymentService;
+import com.ruben.shop.payment.application.ProcessPaymentCommand;
+import com.ruben.shop.payment.domain.PaymentRepository;
 import org.junit.jupiter.api.Test;
-import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
+/** Caso de uso con sus adaptadores reales (JPA, outbox y la pasarela simulada) sobre H2. */
+@SpringBootTest
+@ActiveProfiles("test")
+@Transactional
 class PaymentServiceTest {
 
-    @SuppressWarnings("unchecked")
-    private final KafkaTemplate<String, Object> kafka = mock(KafkaTemplate.class);
-    private final PaymentService service = new PaymentService(kafka);
+    @Autowired
+    PaymentService service;
+    @Autowired
+    PaymentRepository payments;
+    @Autowired
+    OutboxEventRepository outbox;
+    @Autowired
+    ObjectMapper objectMapper;
 
-    private static InventoryResult reserved(String customer, String amount) {
-        return new InventoryResult("o1", customer, new BigDecimal(amount), InventoryResult.Status.RESERVED, null);
+    private void pay(String customer, String amount) {
+        service.processPayment(new ProcessPaymentCommand("o1", customer, new BigDecimal(amount)));
+    }
+
+    private PaymentResult published() throws Exception {
+        return objectMapper.readValue(outbox.findAll().getFirst().getPayload(), PaymentResult.class);
     }
 
     @Test
-    void chargesUpToLimit() {
-        service.onInventoryResult(reserved("c1", "1000"));
+    void completedPaymentIsStoredAndPublished() throws Exception {
+        pay("c1", "1000");
 
-        verify(kafka).send(Topics.PAYMENT_RESULT, "o1", new PaymentResult("o1", PaymentResult.Status.COMPLETED, null));
+        assertThat(payments.exists("o1")).isTrue();
+        assertThat(published()).isEqualTo(new PaymentResult("o1", PaymentResult.Status.COMPLETED, null));
     }
 
     @Test
-    void failsAboveLimit() {
-        service.onInventoryResult(reserved("c1", "1000.01"));
+    void failedPaymentIsPublishedWithReason() throws Exception {
+        pay("c1", "1000.01");
 
-        verify(kafka).send(Topics.PAYMENT_RESULT, "o1",
+        assertThat(published()).isEqualTo(
                 new PaymentResult("o1", PaymentResult.Status.FAILED, "Importe supera el límite de 1000"));
     }
 
     @Test
-    void ignoresRejectedAndDuplicates() {
-        service.onInventoryResult(new InventoryResult("o2", "c1", BigDecimal.TEN, InventoryResult.Status.REJECTED, "x"));
-        service.onInventoryResult(reserved("c1", "10"));
-        service.onInventoryResult(reserved("c1", "10"));
+    void duplicatesAreChargedOnlyOnce() {
+        pay("c1", "10");
+        pay("c1", "10");
 
-        verify(kafka, times(1)).send(eq(Topics.PAYMENT_RESULT), anyString(), any());
+        assertThat(outbox.count()).isEqualTo(1);
     }
 
     @Test
-    void technicalErrorThrowsSoErrorHandlerCanRetryAndSendToDlt() {
-        assertThatThrownBy(() -> service.onInventoryResult(reserved(PaymentService.FAILING_CUSTOMER, "10")))
-                .isInstanceOf(IllegalStateException.class);
-        verify(kafka, never()).send(anyString(), anyString(), any());
+    void gatewayFailureThrowsSoKafkaRetriesAndNothingIsStored() {
+        assertThatThrownBy(() -> pay("boom", "10")).isInstanceOf(IllegalStateException.class);
+
+        assertThat(payments.exists("o1")).isFalse();
+        assertThat(outbox.count()).isZero();
     }
 }

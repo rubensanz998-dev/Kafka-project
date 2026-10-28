@@ -1,73 +1,100 @@
 package com.ruben.shop.inventory;
 
-import com.ruben.shop.common.Topics;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruben.shop.common.events.InventoryResult;
-import com.ruben.shop.common.events.OrderCreated;
-import com.ruben.shop.common.events.PaymentResult;
+import com.ruben.shop.inventory.application.InventoryService;
+import com.ruben.shop.inventory.application.ReserveStockCommand;
+import com.ruben.shop.inventory.domain.Reservation;
+import com.ruben.shop.inventory.domain.ReservationRepository;
+import com.ruben.shop.outbox.OutboxEventRepository;
 import org.junit.jupiter.api.Test;
-import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.domain.Sort;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
 
+/** Casos de uso con sus adaptadores reales (JPA + outbox) sobre H2. */
+@SpringBootTest
+@ActiveProfiles("test")
+@Transactional
 class InventoryServiceTest {
 
-    @SuppressWarnings("unchecked")
-    private final KafkaTemplate<String, Object> kafka = mock(KafkaTemplate.class);
-    private final InventoryService service = new InventoryService(kafka);
+    @Autowired
+    InventoryService service;
+    @Autowired
+    ReservationRepository reservations;
+    @Autowired
+    OutboxEventRepository outbox;
+    @Autowired
+    ObjectMapper objectMapper;
 
-    private static OrderCreated order(String id, int quantity) {
-        return new OrderCreated(id, "c1", "PHONE", quantity, new BigDecimal("300"));
+    private void reserve(String orderId, String product, int quantity) {
+        service.reserveStock(new ReserveStockCommand(orderId, "c1", product, quantity, new BigDecimal("300")));
+    }
+
+    private Reservation.Status reservationStatus(String orderId) {
+        return reservations.findByOrderId(orderId).orElseThrow().status();
+    }
+
+    private InventoryResult lastPublished() throws Exception {
+        var events = outbox.findAll(Sort.by("id"));
+        return objectMapper.readValue(events.getLast().getPayload(), InventoryResult.class);
     }
 
     @Test
-    void reservesStockWhenAvailable() {
-        service.onOrderCreated(order("o1", 2));
+    void reservesStockAndPublishesReservedWithSagaContext() throws Exception {
+        reserve("o1", "PHONE", 2);
 
         assertThat(service.currentStock()).containsEntry("PHONE", 3);
-        verify(kafka).send(eq(Topics.INVENTORY_RESULT), eq("o1"),
-                argThat(e -> ((InventoryResult) e).status() == InventoryResult.Status.RESERVED));
+        assertThat(reservationStatus("o1")).isEqualTo(Reservation.Status.RESERVED);
+        var event = lastPublished();
+        assertThat(event.status()).isEqualTo(InventoryResult.Status.RESERVED);
+        assertThat(event.customerId()).isEqualTo("c1");
     }
 
     @Test
-    void rejectsWhenNotEnoughStock() {
-        service.onOrderCreated(order("o1", 6));
+    void rejectsWhenNotEnoughStockOrUnknownProduct() throws Exception {
+        reserve("o1", "PHONE", 6);
+        assertThat(lastPublished().status()).isEqualTo(InventoryResult.Status.REJECTED);
+
+        reserve("o2", "NOPE", 1);
+        assertThat(lastPublished().reason()).isEqualTo("Producto desconocido: NOPE");
 
         assertThat(service.currentStock()).containsEntry("PHONE", 5);
-        verify(kafka).send(eq(Topics.INVENTORY_RESULT), eq("o1"),
-                argThat(e -> ((InventoryResult) e).status() == InventoryResult.Status.REJECTED));
     }
 
     @Test
     void duplicateOrderReservesOnlyOnce() {
-        service.onOrderCreated(order("o1", 2));
-        service.onOrderCreated(order("o1", 2));
+        reserve("o1", "PHONE", 2);
+        reserve("o1", "PHONE", 2);
 
         assertThat(service.currentStock()).containsEntry("PHONE", 3);
+        assertThat(outbox.findAll()).hasSize(1);
     }
 
     @Test
-    void failedPaymentReleasesStockOnlyOnce() {
-        service.onOrderCreated(order("o1", 2));
-        var failed = new PaymentResult("o1", PaymentResult.Status.FAILED, "rechazado");
+    void releaseReturnsStockOnlyOnce() {
+        reserve("o1", "PHONE", 2);
 
-        service.onPaymentResult(failed);
-        service.onPaymentResult(failed);
+        service.releaseReservation("o1");
+        service.releaseReservation("o1");
 
         assertThat(service.currentStock()).containsEntry("PHONE", 5);
+        assertThat(reservationStatus("o1")).isEqualTo(Reservation.Status.RELEASED);
     }
 
     @Test
-    void completedPaymentKeepsStockReserved() {
-        service.onOrderCreated(order("o1", 2));
+    void confirmKeepsStockReserved() {
+        reserve("o1", "PHONE", 2);
 
-        service.onPaymentResult(new PaymentResult("o1", PaymentResult.Status.COMPLETED, null));
+        service.confirmReservation("o1");
 
         assertThat(service.currentStock()).containsEntry("PHONE", 3);
+        assertThat(reservationStatus("o1")).isEqualTo(Reservation.Status.CONFIRMED);
     }
 }
