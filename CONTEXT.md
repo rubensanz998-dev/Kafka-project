@@ -105,7 +105,6 @@ mvn verify
 - La compensación devuelve el stock.
 - El pedido del usuario `boom` llega al DLT y `payment-service` lo compensa: queda `CANCELLED` y el stock vuelve. Un poison pill en `inventory.result-dlt` se registra y se salta (sin crear `-dlt-dlt`).
 - Outbox: con Kafka apagado el pedido se acepta y, al volver Kafka, se completa.
-
 - Kafka UI (8080) y Adminer (8085) responden, y `notification-service` registra un "email" por cada cambio de estado.
 
 **Pendiente / ideas:**
