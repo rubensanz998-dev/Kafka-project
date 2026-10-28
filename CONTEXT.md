@@ -99,14 +99,14 @@ mvn verify
 
 ## Estado
 
-**Verificado** (28/10/2026), con Kafka 3.8, PostgreSQL 16 y Keycloak 26 ejecutados en local sin Docker:
+**Verificado** (28/10/2026) con `docker compose up --build` (Docker 29.9, Compose 5.6) y también con Kafka 3.8, PostgreSQL 16 y Keycloak 26 en local sin Docker:
 - Los 4 escenarios de la saga, con login real en Keycloak.
 - 401 sin token o con token inválido, y cada usuario ve solo sus pedidos.
 - La compensación devuelve el stock.
 - El pedido del usuario `boom` llega al DLT y `payment-service` lo compensa: queda `CANCELLED` y el stock vuelve. Un poison pill en `inventory.result-dlt` se registra y se salta (sin crear `-dlt-dlt`).
 - Outbox: con Kafka apagado el pedido se acepta y, al volver Kafka, se completa.
 
-**No verificado:** `docker-compose.yml` y `Dockerfile` no se han podido ejecutar (no había Docker en la máquina de desarrollo).
+- Kafka UI (8080) y Adminer (8085) responden, y `notification-service` registra un "email" por cada cambio de estado.
 
 **Pendiente / ideas:**
 - Timeout general de la saga: un fallo técnico fuera del pago (p. ej. en `order-service`) aún deja el pedido `PENDING` en su DLT.
