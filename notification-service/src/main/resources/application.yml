@@ -1,0 +1,8 @@
+spring:
+  application:
+    name: notification-service
+  config:
+    import: classpath:kafka-common.yml
+  kafka:
+    consumer:
+      group-id: notification-service

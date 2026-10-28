@@ -1,0 +1,8 @@
+spring:
+  application:
+    name: payment-service
+  config:
+    import: classpath:kafka-common.yml
+  kafka:
+    consumer:
+      group-id: payment-service

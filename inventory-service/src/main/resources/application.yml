@@ -1,0 +1,11 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: inventory-service
+  config:
+    import: classpath:kafka-common.yml
+  kafka:
+    consumer:
+      group-id: inventory-service
